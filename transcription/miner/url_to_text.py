@@ -9,12 +9,26 @@ from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
 from datetime import datetime
 from speechbrain.pretrained import SpeakerRecognition
 from uuid import uuid4
+from youtube_transcript_api import YouTubeTranscriptApi
 
 recognition_model = SpeakerRecognition.from_hparams(source="speechbrain/lang-id-commonlanguage_ecapa", savedir="tmpdir")
+
+def get_video_id(video_url):
+    # Tách video ID từ URL
+    pattern = re.compile(r'(?<=v=)[\w-]+')
+    match = pattern.search(video_url)
+    if match:
+        return match.group(0)
+    else:
+        return None
 
 def url_to_text(self, synapse: Transcription) -> str:
     audio_url = synapse.audio_input
     segment = synapse.segment
+    
+    bt.logging.info(f"Input synapse audio !: {audio_url}")
+    
+    bt.logging.info(f"Input synapse segment !: {segment}")
 
     if is_twitter_space(audio_url):
         now = datetime.now()
@@ -27,23 +41,53 @@ def url_to_text(self, synapse: Transcription) -> str:
     
     elif is_youtube(audio_url):
         try:
+
+            video_id = get_video_id(audio_url)
+            bt.logging.info(f"Input video_id !: {video_id}")
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+            if video_id:
+                if transcript_list:
+                    filtered_transcript = [transcript for transcript in transcript_list if segment[0] < transcript['start'] < segment[1]]
+                    transcript_text = ' '.join([transcript['text'].upper() for transcript in filtered_transcript])
+                    print("---miner transcript YouTubeTranscriptApi--")
+                    print(transcript_text)
+                    print("---------------------")
+
+                    start, _ = segment
+                    return format_transcription(start, transcript_text)
+                else:
+                    output_filepath = download_youtube_segment(audio_url, segment)
+                    model, processor = load_model(output_filepath)
+                    waveform, sample_rate = read_audio(output_filepath)
+                    transcription = transcribe(model, processor, waveform, sample_rate)
+                    
+                    print("---miner transcript download--")
+                    print(transcription)
+                    print("---------------------")
+
+                    start, _ = segment
+                    return format_transcription(start, transcription)
+            else:
+                return "Invalid YouTube URL. Please provide a valid YouTube video URL."    
+        except Exception as e:
+            # print(f"Failed during model loading or transcription: {e}")
+            # return ""
             output_filepath = download_youtube_segment(audio_url, segment)
             model, processor = load_model(output_filepath)
             waveform, sample_rate = read_audio(output_filepath)
             transcription = transcribe(model, processor, waveform, sample_rate)
-
-            print("---miner transcript--")
+            
+            print("---miner transcript download--")
             print(transcription)
             print("---------------------")
 
             start, _ = segment
             return format_transcription(start, transcription)
-        except Exception as e:
-            print(f"Failed during model loading or transcription: {e}")
-            return ""
 
 def format_transcription(segment_start, transcription):
     formatted_transcription = f"{segment_start}$$_{transcription}"
+    
+    bt.logging.info(f"Result format_transcription: {formatted_transcription}")
     return formatted_transcription
 
 def download_youtube_segment(youtube_url, segment, output_format='flac'):
